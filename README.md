@@ -36,6 +36,19 @@ PRs you've approved, or that are still waiting on the author (you have the last 
 
 ## Install
 
+### Download
+
+1. Download `GitHubMonitor-<version>.zip` from the [latest release](https://github.com/dzhiganov/github-monitor/releases/latest). It's a universal build for Apple Silicon and Intel, macOS 14+.
+2. Unzip it and move **GitHub Monitor.app** to `/Applications`.
+3. The app isn't notarized by Apple, so macOS blocks it the first time. Clear the quarantine flag once:
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/GitHub Monitor.app"
+   ```
+   Or try to open it once, then go to System Settings → Privacy & Security and click **Open Anyway**.
+4. Launch it. It lives in the menu bar.
+
+### Build from source
+
 Requirements: macOS 14 (Sonoma) or later, and Xcode or the Xcode Command Line Tools (Swift 5.10+).
 
 ```sh
@@ -77,6 +90,7 @@ cd github-monitor
 swift build                 # debug build
 ./build.sh                  # release .app → build/GitHub Monitor.app
 ./build.sh install          # release build + install to /Applications + launch
+./build.sh release          # universal build zipped to build/GitHubMonitor-<version>.zip
 ./scripts/test.sh           # PR classification tests (offline, synthetic payloads)
 ./scripts/screenshots.sh    # re-render docs/*.png from mock data
 swift scripts/make-icon.swift   # regenerate Resources/AppIcon.icns
@@ -95,3 +109,7 @@ swift scripts/make-icon.swift   # regenerate Resources/AppIcon.icns
 
 - Each refresh costs about 100 GraphQL rate-limit points, out of the 5,000 per hour that your token shares with `gh`.
 - GitHub's API doesn't say when a review thread was resolved. A thread resolved with no reply and no new commits therefore doesn't count as "answered".
+
+## License
+
+[MIT](LICENSE)
