@@ -71,8 +71,16 @@ MainActor.assumeIsolated {
         item("7", "Add OpenTelemetry tracing to the API gateway", repo: "acme/platform", number: 2490, author: "me", days: 1, kind: .mine, decision: "APPROVED"),
         item("8", "Dark mode for the settings page", repo: "acme/web", number: 3290, author: "me", days: 15, kind: .mine, unanswered: 1),
         item("9", "WIP: offline sync prototype", repo: "acme/mobile", number: 77, author: "me", days: 2, kind: .mine, draft: true),
-    ], fresh: ["1|new", "4|rr", "6|mine"])
+    ].map { i in
+        var i = i
+        if i.id == "6" { i.commenters = [avatar("sarah", 0.58), avatar("marco", 0.08), avatar("jun", 0.33)] }
+        if i.id == "8" { i.commenters = [avatar("priya", 0.85)] }
+        return i
+    }, fresh: ["1|new", "4|rr", "6|mine"])
     store.showDrafts = true
+    store.grouping = .none
+    store.reviewNewestFirst = true
+    store.mineNewestFirst = true
 
     for (name, tab, dark) in [("review-light", Tab.review, false), ("review-dark", Tab.review, true),
                               ("mine-light", Tab.mine, false), ("mine-dark", Tab.mine, true)] {

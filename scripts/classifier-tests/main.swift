@@ -1,7 +1,7 @@
 // Classification tests against synthetic GraphQL payloads. Run: ./scripts/test.sh
 import Foundation
 func d(_ t: Double) -> String { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: 1_700_000_000 + t * 3600)) }
-func a(_ l: String) -> [String: Any] { ["login": l, "avatarUrl": "https://x/y.png", "__typename": l.hasSuffix("bot") ? "Bot" : "User"] }
+func a(_ l: String) -> [String: Any] { ["login": l, "avatarUrl": "https://x/\(l).png", "__typename": l.hasSuffix("bot") ? "Bot" : "User"] }
 // thread: (resolved, headAuthor, headT, tailAuthor, tailT, tailPending)
 func pr(_ id: String, author: String = "alice", reviews: [(String, String, Double, String)] = [], comments: [(String, Double)] = [],
         threads: [(Bool, String, Double, String, Double, Bool)] = [], commit: Double = 0, forcePush: Double? = nil,
@@ -47,6 +47,8 @@ let mine: [[String: Any]] = [
   pr("m3", author: "me", reviews: [("me", "COMMENTED", 3, "")], comments: [("bob", 2)], threads: [(false, "carol", 1, "me", 3, false)]),
   // M2: my pending reply doesn't count as answered
   pr("m4", author: "me", threads: [(false, "bob", 1, "me", 2, true)]),
+  // Commenter avatars: unique people, most recent first, at most 3
+  pr("m5", author: "me", comments: [("bob", 1), ("carol", 2), ("bob", 3), ("dave", 4), ("erin", 5), ("fay", 6)]),
 ]
 let json: [String: Any] = ["data": ["viewer": ["login": "me"], "requested": ["nodes": req + [[:]]], "reviewed": ["nodes": rev], "assigned": ["nodes": []], "mine": ["nodes": mine]]]
 let p = try GitHubClient.decode(try JSONSerialization.data(withJSONObject: json)).payload
@@ -57,6 +59,11 @@ for c in cases {
   let got = items[id].map { $0.kind == .needsReview ? "needsReview" : ($0.reason ?? "?") } ?? "hidden"
   print(got == c.3 ? "PASS" : "FAIL", c.0, "->", got); if got != c.3 { fails += 1 }
 }
-let m = Dictionary(uniqueKeysWithValues: Classifier.myItems(p).map { ($0.id, $0.unanswered) })
-for (id, exp) in [("m1", 2), ("m2", 0), ("m3", 1), ("m4", 1)] { let ok = m[id] == exp; print(ok ? "PASS" : "FAIL", "mine \(id) unanswered", m[id]!, "expected", exp); if !ok { fails += 1 } }
+let mineItems = Dictionary(uniqueKeysWithValues: Classifier.myItems(p).map { ($0.id, $0) })
+let m = mineItems.mapValues(\.unanswered)
+for (id, exp) in [("m1", 2), ("m2", 0), ("m3", 1), ("m4", 1), ("m5", 6)] { let ok = m[id] == exp; print(ok ? "PASS" : "FAIL", "mine \(id) unanswered", m[id]!, "expected", exp); if !ok { fails += 1 } }
+for (id, exp) in [("m1", "carol,bob"), ("m2", ""), ("m3", "bob"), ("m5", "fay,erin,dave")] {
+  let got = mineItems[id]!.commenters.map { $0.deletingPathExtension().lastPathComponent }.joined(separator: ",")
+  print(got == exp ? "PASS" : "FAIL", "mine \(id) commenters", got, "expected", exp); if got != exp { fails += 1 }
+}
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED"); exit(fails == 0 ? 0 : 1)

@@ -19,10 +19,14 @@ struct PRItem: Identifiable, Hashable {
     let kind: Kind
     var reason: String? = nil
     var unanswered: Int = 0
+    /// Avatars of the people behind unanswered comments, most recent first (at most 3).
+    var commenters: [URL] = []
     var decision: String? = nil
     /// Time of the latest event that deserves attention. The item counts as new while this is
     /// later than what the user has already seen for `seenKey`, so it never goes "backwards".
     var eventDate: Date = .distantPast
+    /// Avatar of the user or organization that owns the repository.
+    var ownerAvatarURL: URL? = nil
 
     var seenKey: String {
         switch kind {
@@ -32,6 +36,7 @@ struct PRItem: Identifiable, Hashable {
         }
     }
     var repoName: String { repo.split(separator: "/").last.map(String.init) ?? repo }
+    var owner: String { repo.split(separator: "/").first.map(String.init) ?? repo }
     /// Items that count toward the menu bar badge.
     var wantsAttention: Bool { kind != .mine || unanswered > 0 }
 }
@@ -63,7 +68,7 @@ struct GitHubClient {
     fragment C on PullRequestReviewComment { author { ...A } createdAt state }
     fragment PR on PullRequest {
       id number title url isDraft createdAt updatedAt reviewDecision
-      repository { nameWithOwner }
+      repository { nameWithOwner owner { avatarUrl(size: 64) } }
       author { ...A }
       readyEvents: timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) { nodes { ... on ReadyForReviewEvent { createdAt } } }
       requestEvents: timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 10) { nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } } } }
@@ -183,7 +188,11 @@ struct RawPR: Decodable {
     let reviewThreads: Nodes<ReviewThread>
     let commits: Nodes<CommitNode>
 
-    struct Repo: Decodable { let nameWithOwner: String }
+    struct Repo: Decodable {
+        let nameWithOwner: String
+        let owner: Owner?
+        struct Owner: Decodable { let avatarUrl: URL? }
+    }
     struct Dated: Decodable { let createdAt: Date }
     struct RequestEvent: Decodable { let createdAt: Date; let requestedReviewer: Login? }
     struct ReviewRequest: Decodable { let requestedReviewer: Login? }
@@ -304,23 +313,27 @@ enum Classifier {
         let hasBody = { (r: RawPR.Review) in !(r.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         // Inline threads: unresolved, and someone else spoke last.
-        let threadTimes = pr.reviewThreads.nodes.compactMap { t -> Date? in
+        let threadEvents = pr.reviewThreads.nodes.compactMap { t -> (Date, Actor?)? in
             guard !t.isResolved, let last = t.last, isOther(last.author) else { return nil }
-            return last.createdAt
+            return (last.createdAt, last.author)
         }
 
         // Conversation tab: comments and review summaries from others after my last top-level reply.
         // (Inline replies create body-less reviews, so only reviews with a body count as top-level.)
         let myLastTop = (pr.comments.nodes.filter { isMe($0.author) }.map(\.createdAt)
             + pr.reviews.nodes.filter { isMe($0.author) && hasBody($0) }.compactMap(\.submittedAt)).max() ?? .distantPast
-        let commentTimes = pr.comments.nodes.filter { isOther($0.author) && $0.createdAt > myLastTop }.map(\.createdAt)
-        let reviewTimes = pr.reviews.nodes.compactMap { r -> Date? in
+        let commentEvents = pr.comments.nodes.filter { isOther($0.author) && $0.createdAt > myLastTop }.map { ($0.createdAt, $0.author) }
+        let reviewEvents = pr.reviews.nodes.compactMap { r -> (Date, Actor?)? in
             guard isOther(r.author), r.state != "PENDING", hasBody(r), let at = r.submittedAt, at > myLastTop else { return nil }
-            return at
+            return (at, r.author)
         }
 
-        let all = threadTimes + commentTimes + reviewTimes
-        return item(pr, kind: .mine, unanswered: all.count, eventDate: all.max() ?? .distantPast)
+        let all = (threadEvents + commentEvents + reviewEvents).sorted { $0.0 > $1.0 }
+        var logins = Set<String>()
+        let commenters = all.compactMap(\.1).filter { logins.insert($0.login.lowercased()).inserted }.compactMap(\.avatarUrl)
+        var out = item(pr, kind: .mine, unanswered: all.count, eventDate: all.first?.0 ?? .distantPast)
+        out.commenters = Array(commenters.prefix(3))
+        return out
     }
 
     private static func item(_ pr: RawPR, kind: PRItem.Kind, reason: String? = nil, unanswered: Int = 0, eventDate: Date) -> PRItem {
@@ -332,7 +345,7 @@ enum Classifier {
             openSince: pr.readyEvents.nodes.last?.createdAt ?? pr.createdAt,
             updatedAt: pr.updatedAt,
             kind: kind, reason: reason, unanswered: unanswered, decision: pr.reviewDecision,
-            eventDate: eventDate
+            eventDate: eventDate, ownerAvatarURL: pr.repository.owner?.avatarUrl
         )
     }
 }

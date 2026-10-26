@@ -2,6 +2,25 @@ import AppKit
 import Observation
 import ServiceManagement
 
+enum Grouping: String, CaseIterable {
+    case none, user, organization, repository
+
+    var title: String {
+        switch self {
+        case .none: "None"
+        case .user: "User"
+        case .organization: "Organization"
+        case .repository: "Repository"
+        }
+    }
+}
+
+struct PRGroup: Identifiable {
+    let id: String
+    let imageURL: URL?
+    let items: [PRItem]
+}
+
 @MainActor @Observable
 final class Store {
     private(set) var toReview: [PRItem] = []
@@ -20,6 +39,15 @@ final class Store {
             UserDefaults.standard.set(showDrafts, forKey: Keys.showDrafts)
             if isOpen { markVisibleSeen() } else { notify() }
         }
+    }
+    var reviewNewestFirst: Bool {
+        didSet { UserDefaults.standard.set(reviewNewestFirst, forKey: Keys.reviewNewestFirst) }
+    }
+    var mineNewestFirst: Bool {
+        didSet { UserDefaults.standard.set(mineNewestFirst, forKey: Keys.mineNewestFirst) }
+    }
+    var grouping: Grouping {
+        didSet { UserDefaults.standard.set(grouping.rawValue, forKey: Keys.grouping) }
     }
     var intervalMinutes: Int {
         didSet { UserDefaults.standard.set(intervalMinutes, forKey: Keys.interval); startPolling(refreshNow: false) }
@@ -47,6 +75,7 @@ final class Store {
     private enum Keys {
         static let showDrafts = "showDrafts", interval = "intervalMinutes", seen = "seenEvents"
         static let notified = "notifiedEvents", notifications = "notificationsEnabled"
+        static let reviewNewestFirst = "reviewNewestFirst", mineNewestFirst = "mineNewestFirst", grouping = "grouping"
     }
 
     init() {
@@ -56,16 +85,33 @@ final class Store {
         seen = d.dictionary(forKey: Keys.seen) as? [String: Double] ?? [:]
         notified = d.dictionary(forKey: Keys.notified) as? [String: Double] ?? [:]
         notificationsEnabled = d.object(forKey: Keys.notifications) as? Bool ?? true
+        reviewNewestFirst = d.object(forKey: Keys.reviewNewestFirst) as? Bool ?? true
+        mineNewestFirst = d.object(forKey: Keys.mineNewestFirst) as? Bool ?? true
+        grouping = d.string(forKey: Keys.grouping).flatMap(Grouping.init) ?? .none
     }
 
     // MARK: Derived
 
-    var needsReview: [PRItem] { toReview.filter { $0.kind == .needsReview }.sorted { $0.openSince < $1.openSince } }
-    var reReview: [PRItem] { toReview.filter { $0.kind == .reReview }.sorted { $0.openSince < $1.openSince } }
-    var visibleMine: [PRItem] {
-        mine.filter { showDrafts || !$0.isDraft }.sorted {
-            ($0.unanswered > 0) != ($1.unanswered > 0) ? $0.unanswered > 0 : $0.updatedAt > $1.updatedAt
+    var sortedReview: [PRItem] { sorted(toReview, newestFirst: reviewNewestFirst) }
+    var needsReview: [PRItem] { sortedReview.filter { $0.kind == .needsReview } }
+    var reReview: [PRItem] { sortedReview.filter { $0.kind == .reReview } }
+    var visibleMine: [PRItem] { sorted(mine.filter { showDrafts || !$0.isDraft }, newestFirst: mineNewestFirst) }
+
+    private func sorted(_ items: [PRItem], newestFirst: Bool) -> [PRItem] {
+        items.sorted { newestFirst ? $0.openSince > $1.openSince : $0.openSince < $1.openSince }
+    }
+
+    /// Splits already-sorted items into groups (alphabetical); each group keeps the items' order.
+    func groups(_ items: [PRItem]) -> [PRGroup] {
+        let key: (PRItem) -> String = switch grouping {
+        case .none: { _ in "" }
+        case .user: \.author
+        case .organization: \.owner
+        case .repository: \.repo
         }
+        return Dictionary(grouping: items, by: key).map { name, items in
+            PRGroup(id: name, imageURL: grouping == .user ? items[0].avatarURL : items[0].ownerAvatarURL, items: items)
+        }.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
     }
     private var attentionItems: [PRItem] { (toReview + visibleMine).filter(\.wantsAttention) }
     private func isUnseen(_ item: PRItem) -> Bool { isNewer(item, than: seen) }

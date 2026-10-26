@@ -23,11 +23,13 @@ A tiny, native macOS menu bar app that tells you which pull requests need you: r
 PRs you've approved, or that are still waiting on the author (you have the last word in a thread), are hidden.
 
 **My PRs tab**: your open PRs. Drafts are optional.
-- 💬 **Unanswered comments**: unresolved review threads where someone else spoke last, plus conversation comments and review summaries posted after your last reply.
+- 💬 **Unanswered comments**: unresolved review threads where someone else spoke last, plus conversation comments and review summaries posted after your last reply. Avatars of up to 3 people who left them are shown next to the count.
 - **Review status** icon: approved, changes requested, awaiting review, or draft.
 
 **Everywhere**
 - **Age pill**: how long the PR has been open for review, counted from when it was marked *ready*, not from draft creation. It turns orange after 7 days and red after 14.
+- **Sort** each tab newest or oldest first (by the age pill) with the button next to Refresh. Newest first by default.
+- **Group By** user, organization or repository from the ⚙ menu. Each group shows the user's or owner's avatar, and sorting applies within each group.
 - **Red dot** on the menu bar icon when something new arrives. New rows get a blue dot.
 - **macOS notifications**: one per new event, or a summary for 4 or more. Click one to open the PR.
 - **Background refresh** every 2–30 minutes, and again when the Mac wakes.

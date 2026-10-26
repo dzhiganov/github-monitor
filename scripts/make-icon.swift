@@ -7,18 +7,17 @@ func render(_ px: Int) -> Data {
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     let s = CGFloat(px), inset = s * 0.1, rect = NSRect(x: inset, y: inset, width: s - 2 * inset, height: s - 2 * inset)
-    let shape = NSBezierPath(roundedRect: rect, xRadius: rect.width * 0.225, yRadius: rect.width * 0.225)
-    NSGradient(colors: [NSColor(red: 0.20, green: 0.22, blue: 0.27, alpha: 1), NSColor(red: 0.07, green: 0.08, blue: 0.10, alpha: 1)])!
-        .draw(in: shape, angle: -90)
-    let config = NSImage.SymbolConfiguration(pointSize: s * 0.42, weight: .semibold)
+    let shape = NSBezierPath(ovalIn: rect)
+    NSGradient(colors: [NSColor(white: 0.24, alpha: 1), NSColor(white: 0.06, alpha: 1)])!.draw(in: shape, angle: -90)
+    NSColor(white: 1, alpha: 0.1).setStroke()
+    shape.lineWidth = max(1, s * 0.006)
+    shape.stroke()
+    let config = NSImage.SymbolConfiguration(pointSize: s * 0.38, weight: .semibold)
         .applying(.init(paletteColors: [.white]))
     if let sym = NSImage(systemSymbolName: "arrow.triangle.pull", accessibilityDescription: nil)?.withSymbolConfiguration(config) {
         let sz = sym.size
         sym.draw(in: NSRect(x: (s - sz.width) / 2, y: (s - sz.height) / 2, width: sz.width, height: sz.height))
     }
-    let dot = s * 0.15
-    NSColor.systemRed.setFill()
-    NSBezierPath(ovalIn: NSRect(x: rect.maxX - dot * 1.55, y: rect.maxY - dot * 1.55, width: dot, height: dot)).fill()
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
 }

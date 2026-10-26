@@ -35,6 +35,7 @@ struct ContentView: View {
             tabButton("Review", count: store.toReview.count, tab: .review)
             tabButton("My PRs", count: store.visibleMine.count, tab: .mine)
             Spacer()
+            sortButton
             Button { Task { await store.refresh() } } label: {
                 ZStack {
                     if store.isLoading {
@@ -51,6 +52,26 @@ struct ContentView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+    }
+
+    private var sortButton: some View {
+        @Bindable var store = store
+        let newestFirst = tab == .review ? $store.reviewNewestFirst : $store.mineNewestFirst
+        return Button {
+            withAnimation(.snappy(duration: 0.22)) { newestFirst.wrappedValue.toggle() }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: newestFirst.wrappedValue ? "arrow.down" : "arrow.up")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(newestFirst.wrappedValue ? "Newest" : "Oldest")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .padding(.horizontal, 7)
+            .frame(height: 26)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(IconButtonStyle())
+        .help(newestFirst.wrappedValue ? "Newest first. Click to show oldest first." : "Oldest first. Click to show newest first.")
     }
 
     private func tabButton(_ title: String, count: Int, tab t: Tab) -> some View {
@@ -102,8 +123,12 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     if let error = store.error { ErrorBanner(text: error).padding(.bottom, 4) }
-                    if tab == .review {
-                        section("Needs your review", store.needsReview)
+                    if store.grouping != .none {
+                        ForEach(store.groups(tab == .review ? store.sortedReview : store.visibleMine)) { group in
+                            groupSection(group)
+                        }
+                    } else if tab == .review {
+                        section(nil, store.needsReview)
                         section("Back to you", store.reReview)
                     } else {
                         section(nil, store.visibleMine)
@@ -135,6 +160,29 @@ struct ContentView: View {
         }
     }
 
+    private func groupSection(_ group: PRGroup) -> some View {
+        Section {
+            ForEach(group.items) { item in
+                PRRow(item: item, isNew: store.fresh.contains(item.seenKey)) { store.open(item) }
+            }
+        } header: {
+            HStack(spacing: 7) {
+                GroupImage(url: group.imageURL, round: store.grouping == .user)
+                Text(group.id)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("\(group.items.count)")
+                    .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 3)
+        }
+    }
+
     // MARK: Footer
 
     private var footer: some View {
@@ -156,6 +204,9 @@ struct ContentView: View {
             Menu {
                 Picker("Refresh Every", selection: $store.intervalMinutes) {
                     ForEach([2, 3, 5, 10, 15, 30], id: \.self) { Text("\($0) min").tag($0) }
+                }
+                Picker("Group By", selection: $store.grouping) {
+                    ForEach(Grouping.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
                 Toggle("Notifications", isOn: Binding(get: { store.notificationsEnabled }, set: { store.setNotifications($0) }))
                 if store.notificationsEnabled {
@@ -299,10 +350,13 @@ struct PRRow: View {
             }
             if item.unanswered > 0 {
                 HStack(spacing: 3) {
+                    if !item.commenters.isEmpty {
+                        AvatarStack(urls: item.commenters).padding(.trailing, 2)
+                    }
                     Image(systemName: "bubble.left.fill").font(.system(size: 8.5))
                     Text("\(item.unanswered)").font(.system(size: 10, weight: .semibold).monospacedDigit())
                 }
-                .foregroundStyle(.orange)
+                .foregroundStyle(.secondary)
                 .help("\(item.unanswered) unanswered comment\(item.unanswered == 1 ? "" : "s")")
             }
         }
@@ -310,6 +364,60 @@ struct PRRow: View {
 }
 
 // MARK: - Building blocks
+
+/// Small overlapping avatars. Each one under another has a crescent cut out of it, leaving a
+/// transparent gap that looks right on the translucent popover and the hover highlight alike.
+struct AvatarStack: View {
+    let urls: [URL]
+    private let size: CGFloat = 16, overlap: CGFloat = 4.5, gap: CGFloat = 1.5
+
+    var body: some View {
+        HStack(spacing: -overlap) {
+            ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().interpolation(.high)
+                    } else {
+                        Circle().fill(.quaternary)
+                    }
+                }
+                .frame(width: size, height: size)
+                .overlay(Circle().strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
+                .mask {
+                    Circle().overlay {
+                        if index > 0 {
+                            Circle()
+                                .frame(width: size + gap * 2, height: size + gap * 2)
+                                .offset(x: overlap - size)
+                                .blendMode(.destinationOut)
+                        }
+                    }
+                    .compositingGroup()
+                }
+            }
+        }
+    }
+}
+
+/// Avatar for a group header: round for users, rounded square for orgs and repositories (as on GitHub).
+struct GroupImage: View {
+    let url: URL?
+    let round: Bool
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: round ? 8 : 4, style: .continuous)
+        AsyncImage(url: url) { phase in
+            if let image = phase.image {
+                image.resizable().interpolation(.high)
+            } else {
+                shape.fill(.quaternary)
+            }
+        }
+        .frame(width: 16, height: 16)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
+    }
+}
 
 struct Pill: View {
     let text: String
