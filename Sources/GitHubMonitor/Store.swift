@@ -33,6 +33,15 @@ final class Store {
     /// Keys that were unseen when the popover opened; rows use this for their "new" dot.
     private(set) var fresh: Set<String> = []
     var editingToken = false
+    /// Bumped each time the popover opens, so the list can reset its focus and filter.
+    private(set) var openCount = 0
+    /// Shows snoozed and muted PRs (dimmed) instead of hiding them.
+    var showHidden = false
+    /// PR id → time until which it's snoozed.
+    private(set) var snoozedUntil: [String: Double]
+    /// PR id → its `updatedAt` when snoozed; it stays hidden until GitHub reports newer activity.
+    private(set) var snoozedActivity: [String: Double]
+    private(set) var mutedRepos: Set<String>
 
     var showDrafts: Bool {
         didSet {
@@ -56,16 +65,22 @@ final class Store {
     var notificationsEnabled: Bool {
         didSet { UserDefaults.standard.set(notificationsEnabled, forKey: Keys.notifications) }
     }
+    var notifyCIFailures: Bool {
+        didSet { UserDefaults.standard.set(notifyCIFailures, forKey: Keys.notifyCI) }
+    }
 
     @ObservationIgnored var onBadgeChange: ((Bool) -> Void)?
     @ObservationIgnored var dismiss: (() -> Void)?
     @ObservationIgnored var onNotify: (([PRItem]) -> Void)?
+    @ObservationIgnored var onCIFailure: (([PRItem]) -> Void)?
     @ObservationIgnored var requestNotificationPermission: ((@escaping @Sendable (Bool) -> Void) -> Void)?
 
     /// seenKey → timestamp of the latest event the user has seen for it.
     @ObservationIgnored private var seen: [String: Double]
     /// Same shape as `seen`, but for events already announced with a system notification.
     @ObservationIgnored private var notified: [String: Double]
+    /// PR id → (head commit, checks failed) from the previous refresh, to spot new CI failures.
+    @ObservationIgnored private var lastChecks: [String: (oid: String?, failed: Bool)] = [:]
     @ObservationIgnored private var token: String?
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
@@ -76,6 +91,8 @@ final class Store {
         static let showDrafts = "showDrafts", interval = "intervalMinutes", seen = "seenEvents"
         static let notified = "notifiedEvents", notifications = "notificationsEnabled"
         static let reviewNewestFirst = "reviewNewestFirst", mineNewestFirst = "mineNewestFirst", grouping = "grouping"
+        static let notifyCI = "notifyCIFailures", snoozedUntil = "snoozedUntil", snoozedActivity = "snoozedActivity"
+        static let mutedRepos = "mutedRepos"
     }
 
     init() {
@@ -88,14 +105,32 @@ final class Store {
         reviewNewestFirst = d.object(forKey: Keys.reviewNewestFirst) as? Bool ?? true
         mineNewestFirst = d.object(forKey: Keys.mineNewestFirst) as? Bool ?? true
         grouping = d.string(forKey: Keys.grouping).flatMap(Grouping.init) ?? .none
+        notifyCIFailures = d.object(forKey: Keys.notifyCI) as? Bool ?? true
+        snoozedUntil = d.dictionary(forKey: Keys.snoozedUntil) as? [String: Double] ?? [:]
+        snoozedActivity = d.dictionary(forKey: Keys.snoozedActivity) as? [String: Double] ?? [:]
+        mutedRepos = Set(d.stringArray(forKey: Keys.mutedRepos) ?? [])
     }
 
     // MARK: Derived
 
-    var sortedReview: [PRItem] { sorted(toReview, newestFirst: reviewNewestFirst) }
-    var needsReview: [PRItem] { sortedReview.filter { $0.kind == .needsReview } }
-    var reReview: [PRItem] { sortedReview.filter { $0.kind == .reReview } }
-    var visibleMine: [PRItem] { sorted(mine.filter { showDrafts || !$0.isDraft }, newestFirst: mineNewestFirst) }
+    /// Not snoozed or muted: these count in the tabs, the badge and notifications.
+    var activeReview: [PRItem] { toReview.filter { !isHidden($0) } }
+    var activeMine: [PRItem] { mine.filter { (showDrafts || !$0.isDraft) && !isHidden($0) } }
+    /// What the list shows: active items, plus hidden ones while `showHidden` is on.
+    var listedReview: [PRItem] { sorted(showHidden ? toReview : activeReview, newestFirst: reviewNewestFirst) }
+    var listedMine: [PRItem] {
+        sorted(showHidden ? mine.filter { showDrafts || !$0.isDraft } : activeMine, newestFirst: mineNewestFirst)
+    }
+    var hiddenReviewCount: Int { toReview.filter(isHidden).count }
+    var hiddenMineCount: Int { mine.filter { (showDrafts || !$0.isDraft) && isHidden($0) }.count }
+
+    func isSnoozed(_ item: PRItem) -> Bool {
+        if let until = snoozedUntil[item.id], until > Date.now.timeIntervalSince1970 { return true }
+        if let at = snoozedActivity[item.id], item.updatedAt.timeIntervalSince1970 <= at { return true }
+        return false
+    }
+    func isMuted(_ item: PRItem) -> Bool { mutedRepos.contains(item.repo) }
+    func isHidden(_ item: PRItem) -> Bool { isSnoozed(item) || isMuted(item) }
 
     private func sorted(_ items: [PRItem], newestFirst: Bool) -> [PRItem] {
         items.sorted { newestFirst ? $0.openSince > $1.openSince : $0.openSince < $1.openSince }
@@ -113,7 +148,7 @@ final class Store {
             PRGroup(id: name, imageURL: grouping == .user ? items[0].avatarURL : items[0].ownerAvatarURL, items: items)
         }.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
     }
-    private var attentionItems: [PRItem] { (toReview + visibleMine).filter(\.wantsAttention) }
+    private var attentionItems: [PRItem] { (activeReview + activeMine).filter(\.wantsAttention) }
     private func isUnseen(_ item: PRItem) -> Bool { isNewer(item, than: seen) }
     private func isNewer(_ item: PRItem, than marks: [String: Double]) -> Bool {
         guard let at = marks[item.seenKey] else { return true }
@@ -151,6 +186,8 @@ final class Store {
 
     func popoverOpened() {
         isOpen = true
+        openCount += 1
+        showHidden = false
         fresh = Set(attentionItems.filter(isUnseen).map(\.seenKey))
         markVisibleSeen()
         if let last = lastUpdated, Date.now.timeIntervalSince(last) > 60 { Task { await refresh() } }
@@ -185,6 +222,7 @@ final class Store {
                 markVisibleSeen()
             }
             announce()
+            announceCIFailures()
             pruneSeen()
             notify()
         } catch APIError.unauthorized {
@@ -223,6 +261,7 @@ final class Store {
         token = nil
         toReview = []
         mine = []
+        lastChecks = [:]
         lastUpdated = nil
         startPolling()
     }
@@ -248,7 +287,7 @@ final class Store {
     }
 
     func sendTestNotification() {
-        let sample = toReview.first ?? visibleMine.first ?? PRItem(
+        let sample = toReview.first ?? mine.first ?? PRItem(
             id: "test", number: 42, title: "Notifications are working", url: URL(string: "https://github.com/pulls")!,
             repo: "github-monitor/test", author: "github-monitor", avatarURL: nil, isDraft: false,
             openSince: .now, updatedAt: .now, kind: .needsReview)
@@ -258,6 +297,40 @@ final class Store {
     func open(_ item: PRItem) {
         NSWorkspace.shared.open(item.url)
         dismiss?()
+    }
+
+    // MARK: Snooze & mute
+
+    /// Hides the PR until 9:00 tomorrow.
+    func snoozeUntilTomorrow(_ item: PRItem) {
+        let cal = Calendar.current
+        let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: .now))!
+        snoozedUntil[item.id] = cal.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)!.timeIntervalSince1970
+        snoozeChanged()
+    }
+
+    func snoozeUntilActivity(_ item: PRItem) {
+        snoozedActivity[item.id] = item.updatedAt.timeIntervalSince1970
+        snoozeChanged()
+    }
+
+    func unsnooze(_ item: PRItem) {
+        snoozedUntil[item.id] = nil
+        snoozedActivity[item.id] = nil
+        snoozeChanged()
+    }
+
+    func setMuted(_ repo: String, _ muted: Bool) {
+        if muted { mutedRepos.insert(repo) } else { mutedRepos.remove(repo) }
+        snoozeChanged()
+    }
+
+    private func snoozeChanged() {
+        let d = UserDefaults.standard
+        d.set(snoozedUntil, forKey: Keys.snoozedUntil)
+        d.set(snoozedActivity, forKey: Keys.snoozedActivity)
+        d.set(mutedRepos.sorted(), forKey: Keys.mutedRepos)
+        if isOpen { markVisibleSeen() } else { notify() }
     }
 
     #if DEBUG
@@ -288,6 +361,17 @@ final class Store {
         if !isOpen && notificationsEnabled && !items.isEmpty { onNotify?(items) }
     }
 
+    /// Notifies about my PRs whose checks just started failing: a new failure on the same commit,
+    /// or a new commit that fails. PRs first seen in this session are only recorded.
+    private func announceCIFailures() {
+        let failing = mine.filter { item in
+            guard item.checksFailed, !isHidden(item), let prev = lastChecks[item.id] else { return false }
+            return !(prev.failed && prev.oid == item.headOid)
+        }
+        lastChecks = Dictionary(uniqueKeysWithValues: mine.map { ($0.id, ($0.headOid, $0.checksFailed)) })
+        if !isOpen && notificationsEnabled && notifyCIFailures && !failing.isEmpty { onCIFailure?(failing) }
+    }
+
     /// Forget old entries for items that are gone. Recent ones are kept so a PR that briefly
     /// drops out of search results doesn't come back as "new".
     private func pruneSeen() {
@@ -296,6 +380,16 @@ final class Store {
         seen = seen.filter { current.contains($0.key) || $0.value > cutoff }
         notified = notified.filter { current.contains($0.key) || $0.value > cutoff }
         persistSeen()
+        // Timed snoozes that ran out, and activity snoozes for PRs that are gone or have moved on.
+        let now = Date.now.timeIntervalSince1970
+        let updated = Dictionary((toReview + mine).map { ($0.id, $0.updatedAt.timeIntervalSince1970) }, uniquingKeysWith: max)
+        let until = snoozedUntil.filter { $0.value > now }
+        let activity = snoozedActivity.filter { id, at in updated[id].map { $0 <= at } ?? false }
+        if until != snoozedUntil || activity != snoozedActivity {
+            snoozedUntil = until
+            snoozedActivity = activity
+            snoozeChanged()
+        }
     }
 
     private func persistSeen() {

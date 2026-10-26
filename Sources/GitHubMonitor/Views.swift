@@ -5,9 +5,19 @@ enum Tab: Hashable { case review, mine }
 struct ContentView: View {
     @Environment(Store.self) private var store
     @State private var tab: Tab
+    /// Row under the keyboard cursor (or the mouse).
+    @State private var selection: String?
+    /// Type-to-filter query.
+    @State private var filter = ""
+    /// Bumped by keyboard moves so only they scroll the list, not hovering.
+    @State private var scrollTick = 0
+    @FocusState private var focused: Bool
     @Namespace private var tabNS
 
-    init(tab: Tab = .review) { _tab = State(initialValue: tab) }
+    init(tab: Tab = .review, filter: String = "") {
+        _tab = State(initialValue: tab)
+        _filter = State(initialValue: filter)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,14 +36,26 @@ struct ContentView: View {
         }
         .frame(width: 380, height: 520)
         .background(shortcuts)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onKeyPress(phases: [.down, .repeat], action: handleKey)
+        .onAppear { focused = true }
+        .onChange(of: store.openCount) {
+            focused = true
+            filter = ""
+            selection = nil
+        }
+        .onChange(of: filter) { selection = displayed.first?.id }
+        .onChange(of: tab) { selection = filter.isEmpty ? nil : displayed.first?.id }
     }
 
     // MARK: Header
 
     private var header: some View {
         HStack(spacing: 2) {
-            tabButton("Review", count: store.toReview.count, tab: .review)
-            tabButton("My PRs", count: store.visibleMine.count, tab: .mine)
+            tabButton("Review", count: store.activeReview.count, tab: .review)
+            tabButton("My PRs", count: store.activeMine.count, tab: .mine)
             Spacer()
             sortButton
             Button { Task { await store.refresh() } } label: {
@@ -104,8 +126,37 @@ struct ContentView: View {
 
     // MARK: Content
 
+    private struct ListSection: Identifiable {
+        enum Header { case none, caption(String), group(PRGroup) }
+        let id: String
+        let header: Header
+        let items: [PRItem]
+    }
+
+    private var listed: [PRItem] { tab == .review ? store.listedReview : store.listedMine }
+
+    private var sections: [ListSection] {
+        let query = filter.trimmingCharacters(in: .whitespaces)
+        let items = query.isEmpty ? listed : listed.filter { item in
+            [item.title, item.repo, item.author, "#\(item.number)"].contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+        if store.grouping != .none {
+            return store.groups(items).map { ListSection(id: "g:\($0.id)", header: .group($0), items: $0.items) }
+        }
+        if tab == .review {
+            return [
+                ListSection(id: "new", header: .none, items: items.filter { $0.kind == .needsReview }),
+                ListSection(id: "back", header: .caption("Back to you"), items: items.filter { $0.kind == .reReview }),
+            ].filter { !$0.items.isEmpty }
+        }
+        return [ListSection(id: "mine", header: .none, items: items)]
+    }
+
+    /// Rows in on-screen order, for keyboard navigation.
+    private var displayed: [PRItem] { sections.flatMap(\.items) }
+
     @ViewBuilder private var content: some View {
-        let isEmpty = tab == .review ? store.toReview.isEmpty : store.visibleMine.isEmpty
+        let isEmpty = listed.isEmpty
         if isEmpty && store.lastUpdated == nil {
             if let error = store.error {
                 EmptyState(symbol: "exclamationmark.triangle", title: "Couldn’t load", subtitle: error)
@@ -120,52 +171,62 @@ struct ContentView: View {
                     : EmptyState(symbol: "tray", title: "No open pull requests", subtitle: store.showDrafts ? "You have no open PRs." : "Drafts are hidden.")
             }
         } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    if let error = store.error { ErrorBanner(text: error).padding(.bottom, 4) }
-                    if store.grouping != .none {
-                        ForEach(store.groups(tab == .review ? store.sortedReview : store.visibleMine)) { group in
-                            groupSection(group)
+            let sections = self.sections
+            VStack(spacing: 0) {
+                if !filter.isEmpty { FilterBar(text: filter) { filter = "" } }
+                if sections.isEmpty {
+                    EmptyState(symbol: "magnifyingglass", title: "No matches", subtitle: "Nothing matches “\(filter)”.")
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 1) {
+                                if let error = store.error { ErrorBanner(text: error).padding(.bottom, 4) }
+                                ForEach(sections) { section in
+                                    Section {
+                                        ForEach(section.items) { item in
+                                            // Indent rows under a group header so they read as its children.
+                                            row(item).padding(.leading, store.grouping == .none ? 0 : 12)
+                                        }
+                                    } header: {
+                                        sectionHeader(section.header, count: section.items.count)
+                                    }
+                                }
+                            }
+                            .padding(6)
                         }
-                    } else if tab == .review {
-                        section(nil, store.needsReview)
-                        section("Back to you", store.reReview)
-                    } else {
-                        section(nil, store.visibleMine)
+                        .scrollIndicators(.never)
+                        .onChange(of: scrollTick) {
+                            if let selection { proxy.scrollTo(selection) }
+                        }
                     }
                 }
-                .padding(6)
-            }
-            .scrollIndicators(.never)
-        }
-    }
-
-    @ViewBuilder private func section(_ title: String?, _ items: [PRItem]) -> some View {
-        if !items.isEmpty {
-            if let title {
-                HStack(spacing: 6) {
-                    Text(title.uppercased())
-                    Text("\(items.count)").monospacedDigit()
-                }
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(0.6)
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 10)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
-            }
-            ForEach(items) { item in
-                PRRow(item: item, isNew: store.fresh.contains(item.seenKey)) { store.open(item) }
             }
         }
     }
 
-    private func groupSection(_ group: PRGroup) -> some View {
-        Section {
-            ForEach(group.items) { item in
-                PRRow(item: item, isNew: store.fresh.contains(item.seenKey)) { store.open(item) }
+    private func row(_ item: PRItem) -> some View {
+        PRRow(item: item, isNew: store.fresh.contains(item.seenKey), isSelected: selection == item.id,
+              isHidden: store.isHidden(item)) { store.open(item) }
+            .onHover { if $0 { selection = item.id } }
+            .id(item.id)
+    }
+
+    @ViewBuilder private func sectionHeader(_ header: ListSection.Header, count: Int) -> some View {
+        switch header {
+        case .none:
+            EmptyView()
+        case .caption(let title):
+            HStack(spacing: 6) {
+                Text(title.uppercased())
+                Text("\(count)").monospacedDigit()
             }
-        } header: {
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+        case .group(let group):
             HStack(spacing: 7) {
                 GroupImage(url: group.imageURL, round: store.grouping == .user)
                 Text(group.id)
@@ -173,7 +234,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(group.items.count)")
+                Text("\(count)")
                     .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
@@ -183,10 +244,51 @@ struct ContentView: View {
         }
     }
 
+    // MARK: Keyboard
+
+    private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+        guard !store.needsToken && !store.editingToken,
+              press.modifiers.isDisjoint(with: [.command, .control, .option]) else { return .ignored }
+        switch press.key {
+        case .downArrow: move(1)
+        case .upArrow: move(-1)
+        case .leftArrow: withAnimation(.snappy(duration: 0.22)) { tab = .review }
+        case .rightArrow: withAnimation(.snappy(duration: 0.22)) { tab = .mine }
+        case .return:
+            guard let item = displayed.first(where: { $0.id == selection }) else { return .ignored }
+            store.open(item)
+        case .escape:
+            // An empty filter lets Escape through, which closes the popover.
+            guard !filter.isEmpty else { return .ignored }
+            filter = ""
+        case .delete:
+            guard !filter.isEmpty else { return .ignored }
+            filter.removeLast()
+        default:
+            guard press.characters.count == 1, let c = press.characters.first,
+                  c.isLetter || c.isNumber || c.isPunctuation || c.isSymbol || (c == " " && !filter.isEmpty)
+            else { return .ignored }
+            filter.append(c)
+        }
+        return .handled
+    }
+
+    private func move(_ delta: Int) {
+        let ids = displayed.map(\.id)
+        guard !ids.isEmpty else { return }
+        if let selection, let i = ids.firstIndex(of: selection) {
+            self.selection = ids[min(max(i + delta, 0), ids.count - 1)]
+        } else {
+            selection = delta > 0 ? ids.first : ids.last
+        }
+        scrollTick += 1
+    }
+
     // MARK: Footer
 
     private var footer: some View {
         @Bindable var store = store
+        let hiddenCount = tab == .review ? store.hiddenReviewCount : store.hiddenMineCount
         return HStack(spacing: 10) {
             TimelineView(.periodic(from: .now, by: 30)) { ctx in
                 Text(statusText(now: ctx.date))
@@ -194,6 +296,19 @@ struct ContentView: View {
                     .foregroundStyle(.tertiary)
             }
             Spacer()
+            if hiddenCount > 0 {
+                Button { store.showHidden.toggle() } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: store.showHidden ? "eye" : "eye.slash").font(.system(size: 10))
+                        Text("\(hiddenCount) hidden").font(.system(size: 11))
+                    }
+                    .padding(.horizontal, 6)
+                    .frame(height: 22)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(IconButtonStyle())
+                .help(store.showHidden ? "Hide snoozed and muted PRs" : "Show snoozed and muted PRs")
+            }
             if tab == .mine {
                 Toggle("Drafts", isOn: $store.showDrafts)
                     .toggleStyle(.checkbox)
@@ -208,8 +323,17 @@ struct ContentView: View {
                 Picker("Group By", selection: $store.grouping) {
                     ForEach(Grouping.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
+                if !store.mutedRepos.isEmpty {
+                    Menu("Muted Repositories") {
+                        ForEach(store.mutedRepos.sorted(), id: \.self) { repo in
+                            Button("Unmute \(repo)") { store.setMuted(repo, false) }
+                        }
+                    }
+                }
+                Divider()
                 Toggle("Notifications", isOn: Binding(get: { store.notificationsEnabled }, set: { store.setNotifications($0) }))
                 if store.notificationsEnabled {
+                    Toggle("Notify When Checks Fail", isOn: $store.notifyCIFailures)
                     Button("Send Test Notification") { store.sendTestNotification() }
                 }
                 Toggle("Launch at Login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
@@ -251,13 +375,39 @@ struct ContentView: View {
     }
 }
 
+/// Shows the type-to-filter query above the list.
+struct FilterBar: View {
+    let text: String
+    let clear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            Text(text).font(.system(size: 12)).lineLimit(1).truncationMode(.head)
+            Spacer(minLength: 4)
+            Button(action: clear) {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Clear filter (Esc)")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(.primary.opacity(0.06)))
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+    }
+}
+
 // MARK: - Row
 
 struct PRRow: View {
+    @Environment(Store.self) private var store
     let item: PRItem
     let isNew: Bool
+    let isSelected: Bool
+    let isHidden: Bool
     let action: () -> Void
-    @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -273,10 +423,16 @@ struct PRRow: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
-                    (Text(subtitle).foregroundStyle(.secondary)
-                        + Text(item.reason.map { "  \($0)" } ?? "").foregroundStyle(Color.accentColor).fontWeight(.medium))
-                        .font(.system(size: 11))
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        subtitle
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                        if item.kind == .mine && item.hasConflicts {
+                            Pill(text: "Conflicts", color: .orange, symbol: "exclamationmark.triangle.fill")
+                                .fixedSize()
+                                .help("This branch has conflicts that must be resolved")
+                        }
+                    }
                 }
                 Spacer(minLength: 6)
                 trailing
@@ -285,12 +441,12 @@ struct PRRow: View {
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(.primary.opacity(hovering ? 0.075 : 0))
+                    .fill(.primary.opacity(isSelected ? 0.075 : 0))
             )
+            .opacity(isHidden ? 0.5 : 1)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
         .help("\(item.repo) #\(item.number)\n\(item.title)")
         .contextMenu {
             Button("Open in Browser", action: action)
@@ -298,19 +454,44 @@ struct PRRow: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(item.url.absoluteString, forType: .string)
             }
+            Divider()
+            if store.isSnoozed(item) {
+                Button("Unsnooze") { store.unsnooze(item) }
+            } else {
+                Button("Snooze Until Tomorrow") { store.snoozeUntilTomorrow(item) }
+                Button("Snooze Until New Activity") { store.snoozeUntilActivity(item) }
+            }
+            if store.isMuted(item) {
+                Button("Unmute \(item.repo)") { store.setMuted(item.repo, false) }
+            } else {
+                Button("Mute \(item.repo)") { store.setMuted(item.repo, true) }
+            }
         }
     }
 
-    private var subtitle: String {
-        if item.kind == .mine {
-            let status = switch item.decision {
-            case "APPROVED": "Approved"
-            case "CHANGES_REQUESTED": "Changes requested"
-            default: item.isDraft ? "Draft" : "Awaiting review"
-            }
-            return "\(item.repoName) #\(item.number) · \(status)"
+    private var subtitle: Text {
+        let base = Text(verbatim: "\(item.repoName) #\(item.number) · ").foregroundStyle(.secondary)
+        guard item.kind == .mine else {
+            return base + Text(item.author).foregroundStyle(.secondary)
+                + Text(item.reason.map { "  \($0)" } ?? "").foregroundStyle(Color.accentColor).fontWeight(.medium)
         }
-        return "\(item.repoName) #\(item.number) · \(item.author)"
+        let status = switch item.decision {
+        case "APPROVED": "Approved"
+        case "CHANGES_REQUESTED": "Changes requested"
+        default: item.isDraft ? "Draft" : "Awaiting review"
+        }
+        // CI goes before the status as a bare icon, so a long status (or the Conflicts badge) truncates the status, not CI.
+        var text = base
+        if let checks = item.checks {
+            let (symbol, color): (String, Color) = switch checks {
+            case "SUCCESS": ("checkmark", .secondary)
+            case "FAILURE", "ERROR": ("xmark", .red)
+            default: ("hourglass", .secondary)
+            }
+            text = text + Text(Image(systemName: symbol)).foregroundStyle(color) + Text(" ")
+        }
+        text = text + Text(status).foregroundStyle(.secondary)
+        return text
     }
 
     @ViewBuilder private var leading: some View {
@@ -422,9 +603,13 @@ struct GroupImage: View {
 struct Pill: View {
     let text: String
     let color: Color
+    var symbol: String? = nil
 
     var body: some View {
-        Text(text)
+        HStack(spacing: 3) {
+            if let symbol { Image(systemName: symbol).font(.system(size: 8.5, weight: .bold)) }
+            Text(text)
+        }
             .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
             .foregroundStyle(color)
             .padding(.horizontal, 6)

@@ -74,7 +74,9 @@ MainActor.assumeIsolated {
     ].map { i in
         var i = i
         if i.id == "6" { i.commenters = [avatar("sarah", 0.58), avatar("marco", 0.08), avatar("jun", 0.33)] }
-        if i.id == "8" { i.commenters = [avatar("priya", 0.85)] }
+        if i.id == "6" { i.checks = "FAILURE" }
+        if i.id == "7" { i.checks = "SUCCESS" }
+        if i.id == "8" { i.commenters = [avatar("priya", 0.85)]; i.checks = "PENDING"; i.hasConflicts = true }
         return i
     }, fresh: ["1|new", "4|rr", "6|mine"])
     store.showDrafts = true

@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         notifier.setup()
         notifier.onOpenSummary = { [weak self] in self?.showPopover() }
         store.onNotify = { [weak self] items in self?.notifier.post(items) }
+        store.onCIFailure = { [weak self] items in self?.notifier.postCIFailure(items) }
         store.requestNotificationPermission = { [weak self] done in self?.notifier.requestAuthorization(done) }
         store.start()
 

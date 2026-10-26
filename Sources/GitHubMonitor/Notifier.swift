@@ -44,6 +44,20 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    func postCIFailure(_ items: [PRItem]) {
+        guard let center else { return }
+        for item in items {
+            let content = UNMutableNotificationContent()
+            content.title = "Checks failed"
+            content.subtitle = "\(item.repoName) #\(item.number)"
+            content.body = item.title
+            content.sound = .default
+            content.threadIdentifier = "ci"
+            content.userInfo = ["url": item.url.absoluteString]
+            center.add(UNNotificationRequest(identifier: "\(item.id)|ci", content: content, trigger: nil))
+        }
+    }
+
     private static func title(for item: PRItem) -> String {
         switch item.kind {
         case .needsReview: "Review requested"

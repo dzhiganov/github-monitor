@@ -27,6 +27,10 @@ struct PRItem: Identifiable, Hashable {
     var eventDate: Date = .distantPast
     /// Avatar of the user or organization that owns the repository.
     var ownerAvatarURL: URL? = nil
+    /// Combined CI state of the head commit: SUCCESS, FAILURE, ERROR, PENDING or EXPECTED.
+    var checks: String? = nil
+    var headOid: String? = nil
+    var hasConflicts = false
 
     var seenKey: String {
         switch kind {
@@ -37,6 +41,7 @@ struct PRItem: Identifiable, Hashable {
     }
     var repoName: String { repo.split(separator: "/").last.map(String.init) ?? repo }
     var owner: String { repo.split(separator: "/").first.map(String.init) ?? repo }
+    var checksFailed: Bool { checks == "FAILURE" || checks == "ERROR" }
     /// Items that count toward the menu bar badge.
     var wantsAttention: Bool { kind != .mine || unanswered > 0 }
 }
@@ -67,7 +72,7 @@ struct GitHubClient {
     fragment A on Actor { login avatarUrl(size: 64) __typename }
     fragment C on PullRequestReviewComment { author { ...A } createdAt state }
     fragment PR on PullRequest {
-      id number title url isDraft createdAt updatedAt reviewDecision
+      id number title url isDraft createdAt updatedAt reviewDecision mergeable
       repository { nameWithOwner owner { avatarUrl(size: 64) } }
       author { ...A }
       readyEvents: timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) { nodes { ... on ReadyForReviewEvent { createdAt } } }
@@ -77,7 +82,7 @@ struct GitHubClient {
       reviews(last: 40) { nodes { author { ...A } state submittedAt body } }
       comments(last: 40) { nodes { author { ...A } createdAt } }
       reviewThreads(last: 30) { nodes { isResolved head: comments(first: 1) { nodes { ...C } } tail: comments(last: 2) { nodes { ...C } } } }
-      commits(last: 1) { nodes { commit { committedDate } } }
+      commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state } } } }
     }
     """
 
@@ -177,6 +182,7 @@ struct RawPR: Decodable {
     let createdAt: Date
     let updatedAt: Date
     let reviewDecision: String?
+    let mergeable: String?
     let repository: Repo
     let author: Actor?
     let readyEvents: Nodes<Dated>
@@ -213,7 +219,12 @@ struct RawPR: Decodable {
         var last: Comment? { tail.nodes.last(where: \.isSubmitted) }
     }
     struct CommitNode: Decodable { let commit: Commit }
-    struct Commit: Decodable { let committedDate: Date }
+    struct Commit: Decodable {
+        let oid: String?
+        let committedDate: Date
+        let statusCheckRollup: Rollup?
+        struct Rollup: Decodable { let state: String }
+    }
 }
 
 // MARK: - Classification
@@ -337,7 +348,8 @@ enum Classifier {
     }
 
     private static func item(_ pr: RawPR, kind: PRItem.Kind, reason: String? = nil, unanswered: Int = 0, eventDate: Date) -> PRItem {
-        PRItem(
+        let head = pr.commits.nodes.last?.commit
+        return PRItem(
             id: pr.id, number: pr.number, title: pr.title, url: pr.url,
             repo: pr.repository.nameWithOwner,
             author: pr.author?.login ?? "ghost", avatarURL: pr.author?.avatarUrl,
@@ -345,7 +357,8 @@ enum Classifier {
             openSince: pr.readyEvents.nodes.last?.createdAt ?? pr.createdAt,
             updatedAt: pr.updatedAt,
             kind: kind, reason: reason, unanswered: unanswered, decision: pr.reviewDecision,
-            eventDate: eventDate, ownerAvatarURL: pr.repository.owner?.avatarUrl
+            eventDate: eventDate, ownerAvatarURL: pr.repository.owner?.avatarUrl,
+            checks: head?.statusCheckRollup?.state, headOid: head?.oid, hasConflicts: pr.mergeable == "CONFLICTING"
         )
     }
 }

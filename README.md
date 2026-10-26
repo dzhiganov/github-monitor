@@ -25,6 +25,7 @@ PRs you've approved, or that are still waiting on the author (you have the last 
 **My PRs tab**: your open PRs. Drafts are optional.
 - 💬 **Unanswered comments**: unresolved review threads where someone else spoke last, plus conversation comments and review summaries posted after your last reply. Avatars of up to 3 people who left them are shown next to the count.
 - **Review status** icon: approved, changes requested, awaiting review, or draft.
+- **CI and conflicts**: a ✓ / ✗ / ⧗ icon for the head commit's checks, and *Conflicts* when the PR can't merge cleanly. Optionally get a notification when checks start failing.
 
 **Everywhere**
 - **Age pill**: how long the PR has been open for review, counted from when it was marked *ready*, not from draft creation. It turns orange after 7 days and red after 14.
@@ -35,6 +36,8 @@ PRs you've approved, or that are still waiting on the author (you have the last 
 - **Background refresh** every 2–30 minutes, and again when the Mac wakes.
 - **Bots are ignored.** So are your own unsubmitted (pending) review comments.
 - **Clicking a row** opens the PR in your default browser. Right-click a row to copy its link.
+- **Snooze and mute**: right-click a row to snooze it until tomorrow or until something new happens, or to mute its repository. Hidden PRs don't count toward badges or notifications; the *N hidden* button in the footer shows them again.
+- **Keyboard**: ↑/↓ to move, Return to open, ←/→ to switch tabs, ⌘1/⌘2, ⌘R to refresh. Start typing to filter by title, repo, author or number; Esc clears the filter.
 
 ## Install
 
