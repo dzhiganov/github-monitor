@@ -136,3 +136,20 @@ final class FloatingPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override func cancelOperation(_ sender: Any?) { resignKey(); orderOut(nil) }
 }
+
+enum About {
+    @MainActor static func show() {
+        let center = NSMutableParagraphStyle()
+        center.alignment = .center
+        let body: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: center,
+        ]
+        let credits = NSMutableAttributedString(string: "Pull requests waiting for your review, and replies on your own, in the menu bar.\n\n", attributes: body)
+        var link = body
+        link[.link] = URL(string: "https://github.com/dzhiganov/github-monitor")!
+        credits.append(NSAttributedString(string: "github.com/dzhiganov/github-monitor", attributes: link))
+        // An LSUIElement app has to activate itself, or the panel opens behind other windows.
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
+}

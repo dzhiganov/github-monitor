@@ -343,6 +343,7 @@ struct ContentView: View {
                     Button("Remove Saved Token") { store.signOut() }
                 }
                 Divider()
+                Button("About GitHub Monitor") { store.dismiss?(); About.show() }
                 Button("Quit GitHub Monitor") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "gearshape").font(.system(size: 12, weight: .medium))
